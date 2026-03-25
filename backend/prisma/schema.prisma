@@ -1,0 +1,142 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id        String   @id @default(uuid())
+  name      String
+  color     String   @default("#a78bfa")
+  createdAt DateTime @default(now())
+  tasks     Task[]
+}
+
+model Board {
+  id        String   @id @default(uuid())
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  tasks     Task[]
+}
+
+model Task {
+  id             String    @id @default(uuid())
+  title          String
+  notes          String?
+  status         Status    @default(TODO)
+  priority       Priority  @default(MEDIUM)
+  tag            Tag       @default(DEV)
+  position       Int       @default(0)
+  isTodayTask    Boolean   @default(false)
+  todayMarkedAt  DateTime?
+  estimatedHours Float?
+  projectId      String?
+  project        Project?  @relation(fields: [projectId], references: [id])
+  boardId        String?
+  board          Board?    @relation(fields: [boardId], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model TaskRelation {
+  id         String       @id @default(uuid())
+  fromTaskId String
+  toTaskId   String
+  type       RelationType @default(BLOCKS)
+  createdAt  DateTime     @default(now())
+
+  @@unique([fromTaskId, toTaskId])
+}
+
+model ArchivedTask {
+  id            String        @id @default(uuid())
+  title         String
+  notes         String?
+  priority      Priority
+  tag           Tag
+  weekNumber    Int
+  archivedAt    DateTime      @default(now())
+  archiveReason ArchiveReason @default(AUTO)
+}
+
+model WeekMeta {
+  id         Int      @id @default(1)
+  weekNumber Int      @default(1)
+  startedAt  DateTime @default(now())
+}
+
+model ActivityLog {
+  id         String         @id @default(uuid())
+  taskId     String
+  taskTitle  String
+  action     ActivityAction
+  fromStatus Status?
+  toStatus   Status?
+  createdAt  DateTime       @default(now())
+
+  @@index([taskId])
+  @@index([createdAt])
+}
+
+model ScratchPad {
+  id        Int      @id @default(1)
+  content   String   @default("")
+  updatedAt DateTime @updatedAt
+}
+
+model WeekReport {
+  id                   String   @id @default(uuid())
+  weekNumber           Int      @unique
+  totalCompleted       Int
+  totalCarried         Int
+  tagBreakdown         Json
+  avgCompletionHours   Float?
+  boardId              String?
+  totalEstimatedHours  Float?
+  totalActualHours     Float?
+  createdAt            DateTime @default(now())
+}
+
+enum Status {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+enum Priority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum Tag {
+  DEV
+  TEST
+  DESIGN
+  DOC
+  BUG
+  OPS
+}
+
+enum ArchiveReason {
+  AUTO
+  WEEK_CLOSE
+}
+
+enum ActivityAction {
+  CREATED
+  STATUS_CHANGED
+  UPDATED
+  DELETED
+  ARCHIVED_AUTO
+  ARCHIVED_WEEK_CLOSE
+}
+
+enum RelationType {
+  BLOCKS
+  RELATES_TO
+}

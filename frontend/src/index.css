@@ -1,0 +1,52 @@
+:root {
+  --bg-app:      #0f0f11;
+  --bg-surface:  #161618;
+  --bg-card:     #1e1e22;
+  --border:      #252528;
+  --border-hover:#3f3f50;
+  --text-primary:#e2e0db;
+  --text-muted:  #94a3b8;
+  --text-faint:  #52525b;
+  --accent:      #a78bfa;
+  --accent-hover:#c4b5fd;
+
+  /* Priority colors */
+  --p-high:  #f87171;
+  --p-med:   #fbbf24;
+  --p-low:   #4b5563;
+
+  /* Column colors */
+  --col-todo:#64748b;
+  --col-prog:#60a5fa;
+  --col-done:#34d399;
+
+  /* Tag colors */
+  --tag-dev-bg:    #1e3a5f; --tag-dev-fg:    #60a5fa;
+  --tag-bug-bg:    #3b1e1e; --tag-bug-fg:    #f87171;
+  --tag-test-bg:   #1e3b2e; --tag-test-fg:   #34d399;
+  --tag-doc-bg:    #2e2214; --tag-doc-fg:    #fbbf24;
+  --tag-design-bg: #2e1e3b; --tag-design-fg: #c084fc;
+  --tag-ops-bg:    #1e2e3b; --tag-ops-fg:    #67e8f9;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'IBM Plex Sans', sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+}
