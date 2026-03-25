@@ -1,15 +1,23 @@
 # CLAUDE.md — Taskboard
 
-Kişisel Jira benzeri görev takip uygulaması. Bu dosyayı okuduktan sonra hiçbir şey sormadan
-aşağıdaki adımları sırayla uygula. Her adımı tamamladıktan sonra bir sonrakine geç.
+Tek kullanıcılı, Docker Compose ile çalışan Kanban board uygulaması.
+Görevleri TODO → IN_PROGRESS → DONE akışıyla takip eder.
 
 ---
 
 ## Proje Özeti
 
-Tek kullanıcılı, Docker Compose ile çalışan Kanban board uygulaması.
-Görevleri TODO → IN_PROGRESS → DONE akışıyla takip eder.
-DONE kolonunda max 10 kart sınırı vardır; haftalık olarak manuel kapatılır.
+Kişisel Jira benzeri görev takip uygulaması. Temel özellikler:
+
+- Kanban board (TODO / IN_PROGRESS / DONE)
+- DONE kolonunda max 10 kart; 11. kart gelince en eski otomatik arşive düşer
+- Haftalık manuel kapanış; hafta numarası ve rapor üretilir
+- Aktivite logu, scratch pad, tam metin arama
+- Sürükle-bırak kart taşıma, klavye kısayolları
+- Çoklu board ve proje etiketleri
+- Bağlantılı görevler (bloklama ilişkileri)
+- Odak modu, CSV export, webhook API
+- Tek kullanıcı, JWT session
 
 ---
 
@@ -20,9 +28,43 @@ DONE kolonunda max 10 kart sınırı vardır; haftalık olarak manuel kapatılı
 | Frontend    | React + Vite + TypeScript        |
 | Backend     | Fastify + TypeScript             |
 | ORM         | Prisma                           |
-| Veritabanı  | PostgreSQL 16 (ayrı container)   |
+| Veritabanı  | PostgreSQL 16                    |
 | Proxy       | Nginx (SPA + API tek port)       |
 | Konteyner   | Docker Compose                   |
+
+### Paketler
+
+**Backend:**
+```json
+{
+  "dependencies": {
+    "@fastify/cors": "^9",
+    "@fastify/jwt": "^8",
+    "@prisma/client": "^5",
+    "fastify": "^4"
+  },
+  "devDependencies": {
+    "prisma": "^5",
+    "tsx": "^4",
+    "typescript": "^5",
+    "@types/node": "^20"
+  }
+}
+```
+
+**Frontend:**
+```json
+{
+  "dependencies": {
+    "@dnd-kit/core": "latest",
+    "@dnd-kit/sortable": "latest",
+    "@dnd-kit/utilities": "latest",
+    "date-fns": "latest",
+    "react": "^18",
+    "react-dom": "^18"
+  }
+}
+```
 
 ---
 
@@ -31,10 +73,11 @@ DONE kolonunda max 10 kart sınırı vardır; haftalık olarak manuel kapatılı
 ```
 taskboard/
 ├── docker-compose.yml
-├── nginx/
-│   └── default.conf
+├── .env                         # APP_PORT
 ├── frontend/
-│   ├── Dockerfile
+│   ├── Dockerfile               # multi-stage: build + nginx
+│   ├── nginx/
+│   │   └── default.conf
 │   ├── package.json
 │   ├── vite.config.ts
 │   ├── tsconfig.json
@@ -43,13 +86,22 @@ taskboard/
 │       ├── App.tsx
 │       ├── api.ts               # tüm fetch çağrıları
 │       ├── types.ts             # shared tipler
+│       ├── hooks/
+│       │   └── useKeyboardShortcuts.ts
 │       ├── components/
-│       │   ├── Board.tsx
-│       │   ├── Column.tsx
-│       │   ├── TaskCard.tsx
+│       │   ├── Board.tsx        # DndContext + kolon grid
+│       │   ├── Column.tsx       # SortableContext
+│       │   ├── TaskCard.tsx     # kart + yaş + günün görevi + kopyala
+│       │   ├── TaskDetailPanel.tsx  # aktivite logu + ilişkiler
+│       │   ├── FocusMode.tsx    # tam ekran odak
 │       │   ├── NewTaskModal.tsx
 │       │   ├── CloseWeekModal.tsx
+│       │   ├── WeekReportModal.tsx
 │       │   ├── ArchivePanel.tsx
+│       │   ├── ScratchPad.tsx
+│       │   ├── SearchBar.tsx
+│       │   ├── ProjectPanel.tsx
+│       │   ├── BoardSelector.tsx
 │       │   └── Toast.tsx
 │       └── index.css
 └── backend/
@@ -61,15 +113,28 @@ taskboard/
     └── src/
         ├── server.ts
         ├── auth.ts              # JWT middleware
+        ├── lib/
+        │   └── activity.ts      # logActivity yardımcı
         └── routes/
+            ├── auth.ts
             ├── tasks.ts
             ├── archive.ts
-            └── week.ts
+            ├── week.ts
+            ├── activity.ts
+            ├── scratch.ts
+            ├── reports.ts
+            ├── projects.ts
+            ├── boards.ts
+            ├── relations.ts
+            ├── export.ts
+            └── webhook.ts
 ```
 
 ---
 
-## Docker Compose
+## Altyapı
+
+### Docker Compose
 
 `docker-compose.yml`:
 
@@ -97,48 +162,9 @@ services:
       DATABASE_URL: postgresql://taskboard:taskboard_secret@postgres:5432/taskboard
       JWT_SECRET: change_this_secret_in_production
       PORT: 3001
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
-      - frontend_build:/usr/share/nginx/html
-    depends_on:
-      - api
-    restart: unless-stopped
-
-volumes:
-  pgdata:
-  frontend_build:
-```
-
-**Not:** Frontend build artifact'ı nginx volume'a kopyalanır.
-Bunun için `frontend` servisine `build` ve volume mount ekle, ya da
-multi-stage Dockerfile kullan (tercih edilen yöntem aşağıda).
-
-Nginx + frontend için multi-stage Dockerfile kullan:
-`frontend/Dockerfile` içinde önce `npm run build`, ardından nginx image'ına kopyala.
-`docker-compose.yml`'de ayrı nginx servisi yerine frontend servisi 80 portunu expose eder.
-
-Revize edilmiş servisler:
-
-```yaml
-services:
-  postgres:
-    # yukarıdaki ile aynı
-
-  api:
-    build: ./backend
-    environment:
-      DATABASE_URL: postgresql://taskboard:taskboard_secret@postgres:5432/taskboard
-      JWT_SECRET: change_this_secret_in_production
-      PORT: 3001
+      AUTH_USERNAME: admin
+      AUTH_PASSWORD: admin123
+      WEBHOOK_SECRET: change_this_webhook_secret
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,20 +173,59 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "${APP_PORT}:80"
+      - "${APP_PORT:-8080}:80"
     depends_on:
       - api
     restart: unless-stopped
+
+volumes:
+  pgdata:
 ```
 
-**Not:** `APP_PORT` proje kökündeki `.env` dosyasından okunur. Default: `8080`.
-Port 80 kullanmak için `.env`'de `APP_PORT=80` yap.
+### Frontend Dockerfile (multi-stage)
 
----
+`frontend/Dockerfile`:
 
-## Nginx Konfigürasyonu
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
 
-`nginx/default.conf` (frontend Dockerfile içindeki nginx için de geçerli):
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx/default.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+```
+
+### Backend Dockerfile
+
+`backend/Dockerfile`:
+
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npx prisma generate
+RUN npm run build
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/prisma ./prisma
+COPY package*.json ./
+
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]
+```
+
+### Nginx Konfigürasyonu
+
+`frontend/nginx/default.conf`:
 
 ```nginx
 server {
@@ -196,32 +261,97 @@ datasource db {
 }
 
 model Task {
-  id        String   @id @default(uuid())
-  title     String
-  notes     String?
-  status    Status   @default(TODO)
-  priority  Priority @default(MEDIUM)
-  tag       Tag      @default(DEV)
-  position  Int      @default(0)   // sıralama için
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String    @id @default(uuid())
+  title          String
+  notes          String?
+  status         Status    @default(TODO)
+  priority       Priority  @default(MEDIUM)
+  tag            Tag       @default(DEV)
+  position       Int       @default(0)
+  isTodayTask    Boolean   @default(false)
+  todayMarkedAt  DateTime?
+  estimatedHours Float?
+  projectId      String?
+  project        Project?  @relation(fields: [projectId], references: [id])
+  boardId        String?
+  board          Board?    @relation(fields: [boardId], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 }
 
 model ArchivedTask {
-  id           String   @id @default(uuid())
-  title        String
-  notes        String?
-  priority     Priority
-  tag          Tag
-  weekNumber   Int
-  archivedAt   DateTime @default(now())
+  id            String        @id @default(uuid())
+  title         String
+  notes         String?
+  priority      Priority
+  tag           Tag
+  weekNumber    Int
+  archivedAt    DateTime      @default(now())
   archiveReason ArchiveReason @default(AUTO)
 }
 
 model WeekMeta {
-  id         Int      @id @default(1)  // tek kayıt
+  id         Int      @id @default(1)
   weekNumber Int      @default(1)
   startedAt  DateTime @default(now())
+}
+
+model ActivityLog {
+  id         String         @id @default(uuid())
+  taskId     String
+  taskTitle  String
+  action     ActivityAction
+  fromStatus Status?
+  toStatus   Status?
+  createdAt  DateTime       @default(now())
+
+  @@index([taskId])
+  @@index([createdAt])
+}
+
+model ScratchPad {
+  id        Int      @id @default(1)
+  content   String   @default("")
+  updatedAt DateTime @updatedAt
+}
+
+model WeekReport {
+  id                  String   @id @default(uuid())
+  weekNumber          Int      @unique
+  totalCompleted      Int
+  totalCarried        Int
+  tagBreakdown        Json
+  avgCompletionHours  Float?
+  boardId             String?
+  totalEstimatedHours Float?
+  totalActualHours    Float?
+  createdAt           DateTime @default(now())
+}
+
+model Project {
+  id        String   @id @default(uuid())
+  name      String
+  color     String   @default("#a78bfa")
+  createdAt DateTime @default(now())
+  tasks     Task[]
+}
+
+model Board {
+  id        String   @id @default(uuid())
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  tasks     Task[]
+}
+
+model TaskRelation {
+  id         String       @id @default(uuid())
+  fromTaskId String
+  toTaskId   String
+  type       RelationType @default(BLOCKS)
+  createdAt  DateTime     @default(now())
+
+  @@unique([fromTaskId, toTaskId])
 }
 
 enum Status {
@@ -246,73 +376,132 @@ enum Tag {
 }
 
 enum ArchiveReason {
-  AUTO       // DONE max 10 kuralı
-  WEEK_CLOSE // hafta kapatma
+  AUTO
+  WEEK_CLOSE
 }
+
+enum ActivityAction {
+  CREATED
+  STATUS_CHANGED
+  UPDATED
+  DELETED
+  ARCHIVED_AUTO
+  ARCHIVED_WEEK_CLOSE
+}
+
+enum RelationType {
+  BLOCKS
+  RELATES_TO
+}
+```
+
+### Seed (server.ts start fonksiyonunda)
+
+```typescript
+await prisma.weekMeta.upsert({ where: { id: 1 }, create: { id: 1, weekNumber: 1 }, update: {} })
+await prisma.scratchPad.upsert({ where: { id: 1 }, create: { id: 1, content: '' }, update: {} })
+await prisma.board.upsert({
+  where: { id: 'default' },
+  create: { id: 'default', name: 'Ana Board', isDefault: true },
+  update: {},
+})
+await prisma.task.updateMany({ where: { boardId: null }, data: { boardId: 'default' } })
 ```
 
 ---
 
-## Backend API Endpoints
+## API Endpoints
+
+Tüm endpoint'ler `Authorization: Bearer <token>` gerektirir, webhook hariç.
 
 ### Auth
 
-Uygulama tek kullanıcılı. Basit sabit kullanıcı adı/şifre `.env`'den okunur.
-JWT ile session yönetimi yapılır.
-
 ```
-POST /auth/login
-  body: { username: string, password: string }
-  response: { token: string }
+POST /auth/login   body: { username, password } → { token }
 ```
-
-Diğer tüm endpoint'ler `Authorization: Bearer <token>` header'ı gerektirir.
-Geçersiz/eksik token → 401 döner.
 
 ### Tasks
 
 ```
-GET    /tasks              → Task[]  (status'a göre filtrele: ?status=TODO)
-POST   /tasks              → Task    (yeni görev oluştur)
-PATCH  /tasks/:id          → Task    (title, notes, status, priority, tag güncelle)
-DELETE /tasks/:id          → 204     (görevi sil)
-PATCH  /tasks/:id/status   → Task    (sadece status güncelle — durum geçişi)
+GET    /tasks                    → Task[]  (?status=, ?boardId=, ?projectId=)
+POST   /tasks                    → Task
+PATCH  /tasks/:id                → Task   (title, notes, status, priority, tag, isTodayTask, estimatedHours)
+DELETE /tasks/:id                → 204
+PATCH  /tasks/:id/status         → Task   (status geçişi + DONE max 10 kuralı)
+GET    /tasks/search?q=<query>   → Task[] (başlık + not full-text, max 20)
+GET    /tasks/:id/relations      → { blocks, blockedBy, relatesTo }
+POST   /tasks/:id/relations      → TaskRelation  body: { toTaskId, type }
+DELETE /tasks/:id/relations/:rid → 204
 ```
-
-**DONE'a taşıma iş kuralı (PATCH /tasks/:id/status):**
-
-Bir görev DONE'a taşındığında:
-1. Mevcut DONE kart sayısını say.
-2. Eğer 10'a ulaşıldıysa (`count >= 10`), `createdAt` en eski DONE kartı
-   `ArchivedTask`'a taşı, `Task`'tan sil. `archiveReason = AUTO`.
-3. Görevi DONE'a taşı.
-
-Bu işlem tek bir Prisma transaction içinde yapılmalı.
 
 ### Archive
 
 ```
-GET /archive               → ArchivedTask[]  (weekNumber'a göre desc sırala)
-GET /archive?week=<n>      → ArchivedTask[]  (belirli hafta)
+GET /archive          → ArchivedTask[]  (weekNumber desc)
+GET /archive?week=<n> → ArchivedTask[]
 ```
 
 ### Week
 
 ```
-GET  /week                 → WeekMeta
-POST /week/close           → { weekNumber: number, archivedCount: number }
+GET  /week              → WeekMeta
+POST /week/close        → { weekNumber, archivedCount }  (?boardId=)
 ```
 
-**Hafta kapatma iş kuralı (POST /week/close):**
+### Activity
 
-1. Tüm DONE durumundaki `Task` kayıtlarını `ArchivedTask`'a taşı.
-   `archiveReason = WEEK_CLOSE`.
-2. `Task` tablosundan bu kayıtları sil.
-3. `WeekMeta.weekNumber`'ı 1 artır.
-4. `WeekMeta.startedAt`'ı güncelle.
-5. TODO ve IN_PROGRESS kartlar dokunulmadan kalır.
+```
+GET /activity             → ActivityLog[]  (createdAt desc, limit 50)
+GET /activity?taskId=<id> → ActivityLog[]
+```
 
-Tüm işlem tek Prisma transaction.
+### Scratch Pad
+
+```
+GET   /scratch   → { content, updatedAt }
+PATCH /scratch   → { content, updatedAt }  body: { content }
+```
+
+### Reports
+
+```
+GET /reports        → WeekReport[]  (weekNumber desc)
+GET /reports/:week  → WeekReport
+```
+
+### Projects
+
+```
+GET    /projects      → Project[]
+POST   /projects      → Project   body: { name, color }
+PATCH  /projects/:id  → Project
+DELETE /projects/:id  → 204  (bağlı görevlerin projectId → null)
+```
+
+### Boards
+
+```
+GET    /boards           → Board[]
+POST   /boards           → Board   body: { name }
+PATCH  /boards/:id       → Board
+DELETE /boards/:id       → 204  (varsayılan silinemez; görevler varsayılana taşınır)
+GET    /boards/:id/workload → { totalEstimatedHours, todoHours, inProgressHours, taskCount }
+```
+
+### Export
+
+```
+GET /export/tasks?boardId=<id>    → CSV
+GET /export/archive?boardId=<id>  → CSV
+```
+
+### Webhook
+
+```
+POST /webhook/tasks   (JWT yok; X-Webhook-Secret header ile doğrulama)
+  body: { title, notes?, priority?, tag?, boardId?, projectId? }
+  → Task
+```
 
 ---
 
@@ -324,11 +513,19 @@ Tüm işlem tek Prisma transaction.
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import jwt from '@fastify/jwt'
-import { authRoutes } from './routes/auth'
-import { taskRoutes } from './routes/tasks'
-import { archiveRoutes } from './routes/archive'
-import { weekRoutes } from './routes/week'
 import { PrismaClient } from '@prisma/client'
+import { authRoutes }     from './routes/auth'
+import { taskRoutes }     from './routes/tasks'
+import { archiveRoutes }  from './routes/archive'
+import { weekRoutes }     from './routes/week'
+import { activityRoutes } from './routes/activity'
+import { scratchRoutes }  from './routes/scratch'
+import { reportRoutes }   from './routes/reports'
+import { projectRoutes }  from './routes/projects'
+import { boardRoutes }    from './routes/boards'
+import { relationRoutes } from './routes/relations'
+import { exportRoutes }   from './routes/export'
+import { webhookRoutes }  from './routes/webhook'
 
 export const prisma = new PrismaClient()
 
@@ -337,19 +534,30 @@ const app = Fastify({ logger: true })
 app.register(cors, { origin: true })
 app.register(jwt, { secret: process.env.JWT_SECRET || 'dev_secret' })
 
-app.register(authRoutes, { prefix: '/auth' })
-app.register(taskRoutes, { prefix: '/tasks' })
+app.register(authRoutes,    { prefix: '/auth' })
+app.register(taskRoutes,    { prefix: '/tasks' })
 app.register(archiveRoutes, { prefix: '/archive' })
-app.register(weekRoutes, { prefix: '/week' })
+app.register(weekRoutes,    { prefix: '/week' })
+app.register(activityRoutes,{ prefix: '/activity' })
+app.register(scratchRoutes, { prefix: '/scratch' })
+app.register(reportRoutes,  { prefix: '/reports' })
+app.register(projectRoutes, { prefix: '/projects' })
+app.register(boardRoutes,   { prefix: '/boards' })
+app.register(relationRoutes,{ prefix: '/tasks' })  // /tasks/:id/relations
+app.register(exportRoutes,  { prefix: '/export' })
+app.register(webhookRoutes, { prefix: '/webhook' })
 
 const start = async () => {
   await prisma.$connect()
-  // WeekMeta seed — yoksa oluştur
-  await prisma.weekMeta.upsert({
-    where: { id: 1 },
-    create: { id: 1, weekNumber: 1 },
+  // seed
+  await prisma.weekMeta.upsert({ where: { id: 1 }, create: { id: 1, weekNumber: 1 }, update: {} })
+  await prisma.scratchPad.upsert({ where: { id: 1 }, create: { id: 1, content: '' }, update: {} })
+  await prisma.board.upsert({
+    where: { id: 'default' },
+    create: { id: 'default', name: 'Ana Board', isDefault: true },
     update: {},
   })
+  await prisma.task.updateMany({ where: { boardId: null }, data: { boardId: 'default' } })
   await app.listen({ port: Number(process.env.PORT) || 3001, host: '0.0.0.0' })
 }
 
@@ -357,8 +565,6 @@ start()
 ```
 
 ### `backend/src/auth.ts`
-
-Middleware: her route'dan önce JWT doğrular.
 
 ```typescript
 import { FastifyRequest, FastifyReply } from 'fastify'
@@ -372,54 +578,42 @@ export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
 }
 ```
 
-### `backend/src/routes/auth.ts`
+### `backend/src/lib/activity.ts`
 
 ```typescript
-// POST /auth/login
-// username ve password env'den oku: AUTH_USERNAME, AUTH_PASSWORD
-// Eşleşirse JWT imzala ve dön
-```
+import { prisma } from '../server'
+import { ActivityAction, Status } from '@prisma/client'
 
-### `backend/package.json` dependencies
-
-```json
-{
-  "dependencies": {
-    "@fastify/cors": "^9",
-    "@fastify/jwt": "^8",
-    "@prisma/client": "^5",
-    "fastify": "^4"
-  },
-  "devDependencies": {
-    "prisma": "^5",
-    "tsx": "^4",
-    "typescript": "^5",
-    "@types/node": "^20"
-  }
+export async function logActivity(params: {
+  taskId: string
+  taskTitle: string
+  action: ActivityAction
+  fromStatus?: Status
+  toStatus?: Status
+  tx?: any
+}) {
+  const client = params.tx || prisma
+  return client.activityLog.create({
+    data: {
+      taskId: params.taskId,
+      taskTitle: params.taskTitle,
+      action: params.action,
+      fromStatus: params.fromStatus,
+      toStatus: params.toStatus,
+    }
+  })
 }
 ```
 
-### `backend/Dockerfile`
+**Aktivite logu tetiklenme noktaları:**
+- `POST /tasks` → `CREATED`
+- `PATCH /tasks/:id/status` → `STATUS_CHANGED` (fromStatus, toStatus)
+- `PATCH /tasks/:id` → `UPDATED`
+- `DELETE /tasks/:id` → `DELETED`
+- DONE max 10 transaction'ında otomatik arşiv → `ARCHIVED_AUTO`
+- `POST /week/close` transaction'ında → `ARCHIVED_WEEK_CLOSE`
 
-```dockerfile
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npx prisma generate
-RUN npm run build
-
-FROM node:20-alpine
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/prisma ./prisma
-COPY package*.json ./
-
-# Migration + start
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]
-```
+Tüm log yazmaları ilgili işlemle aynı transaction içinde olmalı.
 
 ---
 
@@ -428,10 +622,14 @@ CMD ["sh", "-c", "npx prisma migrate deploy && node dist/server.js"]
 ### `frontend/src/types.ts`
 
 ```typescript
-export type Status = 'TODO' | 'IN_PROGRESS' | 'DONE'
-export type Priority = 'HIGH' | 'MEDIUM' | 'LOW'
-export type Tag = 'DEV' | 'TEST' | 'DESIGN' | 'DOC' | 'BUG' | 'OPS'
+export type Status        = 'TODO' | 'IN_PROGRESS' | 'DONE'
+export type Priority      = 'HIGH' | 'MEDIUM' | 'LOW'
+export type Tag           = 'DEV' | 'TEST' | 'DESIGN' | 'DOC' | 'BUG' | 'OPS'
 export type ArchiveReason = 'AUTO' | 'WEEK_CLOSE'
+export type ActivityAction =
+  | 'CREATED' | 'STATUS_CHANGED' | 'UPDATED' | 'DELETED'
+  | 'ARCHIVED_AUTO' | 'ARCHIVED_WEEK_CLOSE'
+export type RelationType  = 'BLOCKS' | 'RELATES_TO'
 
 export interface Task {
   id: string
@@ -440,6 +638,14 @@ export interface Task {
   status: Status
   priority: Priority
   tag: Tag
+  position: number
+  isTodayTask: boolean
+  todayMarkedAt?: string
+  estimatedHours?: number
+  projectId?: string
+  project?: Pick<Project, 'id' | 'name' | 'color'>
+  boardId?: string
+  isBlocked?: boolean   // backend tarafından hesaplanır
   createdAt: string
   updatedAt: string
 }
@@ -459,18 +665,72 @@ export interface WeekMeta {
   weekNumber: number
   startedAt: string
 }
+
+export interface ActivityLog {
+  id: string
+  taskId: string
+  taskTitle: string
+  action: ActivityAction
+  fromStatus?: Status
+  toStatus?: Status
+  createdAt: string
+}
+
+export interface ScratchPad {
+  content: string
+  updatedAt: string
+}
+
+export interface WeekReport {
+  id: string
+  weekNumber: number
+  totalCompleted: number
+  totalCarried: number
+  tagBreakdown: Record<string, number>
+  avgCompletionHours: number | null
+  totalEstimatedHours?: number
+  totalActualHours?: number
+  createdAt: string
+}
+
+export interface Project {
+  id: string
+  name: string
+  color: string
+  createdAt: string
+}
+
+export interface Board {
+  id: string
+  name: string
+  isDefault: boolean
+  createdAt: string
+}
+
+export interface BoardWorkload {
+  totalEstimatedHours: number
+  todoHours: number
+  inProgressHours: number
+  taskCount: { todo: number; inProgress: number; done: number }
+}
+
+export interface TaskRelation {
+  id: string
+  fromTaskId: string
+  toTaskId: string
+  type: RelationType
+  createdAt: string
+}
 ```
 
 ### `frontend/src/api.ts`
 
-Tüm API çağrıları burada toplanır. Base URL: `/api`.
-Token localStorage'da saklanır.
+Tüm API çağrıları burada toplanır. Base URL: `/api`. Token localStorage'da.
 
 ```typescript
 const BASE = '/api'
 
 function getToken() { return localStorage.getItem('token') }
-
 function headers() {
   return {
     'Content-Type': 'application/json',
@@ -479,35 +739,77 @@ function headers() {
 }
 
 // Auth
-export const login = (u: string, p: string) => ...
+export const login  = (u: string, p: string) => ...
 export const logout = () => localStorage.removeItem('token')
 
 // Tasks
-export const getTasks = (status?: string) => ...
-export const createTask = (data: Partial<Task>) => ...
-export const updateTask = (id: string, data: Partial<Task>) => ...
-export const deleteTask = (id: string) => ...
-export const moveTask = (id: string, status: Status) => ...
+export const getTasks      = (params?: { status?: string, boardId?: string, projectId?: string }) => ...
+export const createTask    = (data: Partial<Task>) => ...
+export const updateTask    = (id: string, data: Partial<Task>) => ...
+export const deleteTask    = (id: string) => ...
+export const moveTask      = (id: string, status: Status) => ...
+export const searchTasks   = (q: string) => ...
+export const cloneTask     = (id: string) => ...
+
+// Relations
+export const getRelations    = (taskId: string) => ...
+export const addRelation     = (taskId: string, toTaskId: string, type: RelationType) => ...
+export const deleteRelation  = (taskId: string, relationId: string) => ...
 
 // Archive
 export const getArchive = (week?: number) => ...
 
 // Week
-export const getWeek = () => ...
-export const closeWeek = () => ...
+export const getWeek   = () => ...
+export const closeWeek = (boardId?: string) => ...
+
+// Activity
+export const getActivity = (params?: { taskId?: string, limit?: number }) => ...
+
+// Scratch pad
+export const getScratch    = () => ...
+export const updateScratch = (content: string) => ...
+
+// Reports
+export const getReports    = () => ...
+export const getReport     = (week: number) => ...
+
+// Projects
+export const getProjects    = () => ...
+export const createProject  = (data: { name: string, color: string }) => ...
+export const updateProject  = (id: string, data: Partial<Project>) => ...
+export const deleteProject  = (id: string) => ...
+
+// Boards
+export const getBoards      = () => ...
+export const createBoard    = (data: { name: string }) => ...
+export const updateBoard    = (id: string, data: Partial<Board>) => ...
+export const deleteBoard    = (id: string) => ...
+export const getBoardWorkload = (id: string) => ...
+
+// Export
+export async function downloadCSV(url: string, filename: string) {
+  const res = await fetch(url, { headers: headers() })
+  const blob = await res.blob()
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
 ```
 
 ### Uygulama Akışı
 
-1. Uygulama açılırken token yoksa login ekranı göster.
-2. Token varsa board'u göster.
-3. Board açılırken `GET /tasks`, `GET /week` çağrılarını paralel yap.
+1. Token yoksa `LoginPage` göster.
+2. Token varsa `Board` göster; `GET /tasks`, `GET /week`, `GET /boards` paralel çağrılır.
+3. Board değişince ilgili boardId ile veriler yeniden yüklenir.
 
 ---
 
 ## UI Tasarım Sistemi
 
-### Renkler (CSS değişkenleri olarak tanımla)
+### Renkler
 
 ```css
 :root {
@@ -522,17 +824,14 @@ export const closeWeek = () => ...
   --accent:      #a78bfa;
   --accent-hover:#c4b5fd;
 
-  /* Öncelik renkleri */
   --p-high:  #f87171;
   --p-med:   #fbbf24;
   --p-low:   #4b5563;
 
-  /* Kolon renkleri */
   --col-todo:#64748b;
   --col-prog:#60a5fa;
   --col-done:#34d399;
 
-  /* Tag renkleri */
   --tag-dev-bg:    #1e3a5f; --tag-dev-fg:    #60a5fa;
   --tag-bug-bg:    #3b1e1e; --tag-bug-fg:    #f87171;
   --tag-test-bg:   #1e3b2e; --tag-test-fg:   #34d399;
@@ -545,94 +844,188 @@ export const closeWeek = () => ...
 ### Fontlar
 
 ```html
-<link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 ```
 
 - Body: `IBM Plex Sans`
-- Logo, sayaçlar, tag'ler, tarihler: `IBM Plex Mono`
+- Logo, sayaçlar, tag'ler, tarihler, kod alanları: `IBM Plex Mono`
 
 ### Bileşenler
 
 **TopBar:**
-- Sol: `taskboard` logosu (mor nokta + IBM Plex Mono)
-- Orta: `Hafta {n}` yazısı (IBM Plex Mono, soluk renk)
-- Sağ: Arşiv butonu (kart sayısıyla) | Hafta Kapat butonu | + Yeni Görev butonu
+- Sol: `taskboard` logosu → board seçici dropdown → proje filtresi dropdown
+- Orta: Günün görevi pill'leri (max 3) → `Hafta {n}`
+- Sağ: Board yük özeti pill | `📝` scratch pad | `🔍` arama | `📊` raporlar | `⊞` projeler | `⬇` CSV export | Arşiv | Hafta Kapat | + Yeni Görev
 
-**Board:** 3 sütunlu grid, 12px gap, 14px padding
+**Board:** 3 sütunlu grid, 12px gap, 14px padding; `DndContext` ile sarılı
 
 **Column:**
 - Header: kolon adı + renkli nokta + kart sayacı
-- DONE kolonunda ayrıca `{n}/10` göstergesi — 8+ olunca sarı renk alır
-- Body: kartlar dikey liste
+- DONE kolonunda `{n}/10` göstergesi — 8+ olunca sarı
 - Footer: `+ görev ekle` dashed buton
 
 **TaskCard:**
-- Sol kenarda 3px öncelik çubuğu (kırmızı/sarı/gri)
-- Başlık: 13px, font-weight 500
-- DONE kartlarında üstü çizili + soluk renk
-- Alt satır: tag pill (sol) + öncelik etiketi (sağ)
+- Sol kenarda 3px öncelik çubuğu
+- `📌` ikonu (günün görevi), `⊘` ikonu (bloke)
+- Başlık: 13px, font-weight 500; DONE'da üstü çizili
+- Alt satır: tag pill + proje renk noktası + proje adı + öncelik etiketi
+- Sağ üst (hover): `⧉` kopyala butonu, `⤢` odak modu butonu
+- Sağ alt (varsa): `⏱ {n}s` tahmini süre (IBM Plex Mono 10px)
+- Görev yaşı (sadece TODO/IN_PROGRESS): sağ üst köşe `{n}g` etiketi
+  - 3-6 gün: sarı nokta
+  - 7+ gün: kırmızı nokta
 - Hover: hafif yukarı kayma + border açılır
 
-**NewTaskModal:**
-- Alanlar: title (required), notes (textarea, opsiyonel), status (select), priority (select), tag (select)
-- Overlay tıklanınca kapanır
-- ESC tuşuyla kapanır
+**TaskDetailPanel:** Karta tıklanınca board'un sağında açılır
+- Başlık + düzenleme, notlar textarea, durum/öncelik/tag
+- Aktivite zaman çizelgesi (`date-fns formatDistanceToNow`)
+- İlişkiler bölümü (bloklıyor / bloke edilmiş / bağlantılı)
 
-**CloseWeekModal:**
-- "Hafta Kapat" butonuna basınca açılır
-- DONE kart sayısını ve TODO+IN_PROGRESS toplam sayısını gösterir
-- Onay butonu: "Haftayı Kapat ↩"
+**FocusMode:** `F` kısayolu veya `⤢` butonu
+- Board yerine tek kart tam genişlikte
+- Başlık (IBM Plex Mono 24px), notlar, aktivite logu
+- Sol/sağ ok ile aynı kolondaki kartlar arası geçiş
+- `ESC` veya `⤡` ile kapanır; odak modundayken sadece odak kısayolları aktif
 
-**ArchivePanel:**
-- Topbar'daki "Arşiv" butonuyla açılır/kapanır
-- Board'un altında slide-down ile açılır
-- Her kayıt: başlık (üstü çizili) + hafta numarası + tag
-- Haftaya göre grupla (en yenisi üstte)
+**NewTaskModal:** title (zorunlu), notes, status, priority, tag, estimatedHours
+**CloseWeekModal:** DONE kart sayısı + TODO/IN_PROGRESS toplam; onay: "Haftayı Kapat ↩"
+**WeekReportModal:** Hafta kapanınca açılır; tamamlanan, devam eden, tag breakdown chart, ort. süre
+**ArchivePanel:** Topbar arşiv butonuyla board altında slide-down; haftaya göre gruplu liste
+**ScratchPad:** Topbar `📝` butonu; board altında tam genişlik; 1s debounce kayıt; IBM Plex Mono
+**SearchBar:** `/` kısayolu veya 🔍 butonu; 300ms debounce; max 8 sonuç dropdown; ESC kapatır
 
-**Toast:**
-- Ekranın alt ortasında çıkar
-- 3 saniye sonra kaybolur
-- Otomatik arşivlemede: `↓ Otomatik arşivlendi: {title}`
-- Hafta kapatmada: `✓ Hafta kapatıldı — {n} kart arşivlendi`
+**Toast:** Ekran alt ortası, 3 saniye
+- Otomatik arşiv: `↓ Otomatik arşivlendi: {title}`
+- Hafta kapanışı: `✓ Hafta kapatıldı — {n} kart arşivlendi`
+- Kart kopyalama: `"Kart kopyalandı"`
+- Günlük limit aşımı: `"Günlük max 3 görev"`
+- API hataları
 
-**LoginPage:**
-- Tam ekran, koyu arka plan
-- Logo + kullanıcı adı + şifre inputu + giriş butonu
-- Hata durumunda "Kullanıcı adı veya şifre hatalı" mesajı
+**LoginPage:** Tam ekran; logo + kullanıcı adı + şifre + giriş butonu; "Kullanıcı adı veya şifre hatalı"
 
 ---
 
-## İş Kuralları (Özet)
+## Klavye Kısayolları
+
+Global `useKeyboardShortcuts` hook — input/textarea odaklanmışken devre dışı.
+
+| Kısayol | Eylem |
+|---------|-------|
+| `N` | Yeni görev modalı |
+| `/` | Arama |
+| `P` | Scratch pad aç/kapat |
+| `R` | Raporlar paneli |
+| `F` | Odak modu (ilk IN_PROGRESS kart) |
+| `B` | Board seçici |
+| `←` `→` | Odak modunda önceki/sonraki kart |
+| `ESC` | Açık modal/panel kapat |
+| `?` | Kısayol listesi |
+
+```typescript
+// hooks/useKeyboardShortcuts.ts
+export function useKeyboardShortcuts(handlers: Record<string, () => void>) {
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const active = document.activeElement
+      const isInput = active?.tagName === 'INPUT' ||
+                      active?.tagName === 'TEXTAREA' ||
+                      (active as HTMLElement)?.isContentEditable
+      if (isInput) return
+      const handler = handlers[e.key.toLowerCase()]
+      if (handler) { e.preventDefault(); handler() }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [handlers])
+}
+```
+
+---
+
+## İş Kuralları
 
 1. **Görev durumları:** TODO → IN_PROGRESS → DONE (tek yön)
-2. **DONE max 10:** 11. kart eklenince en eski `createdAt`'e göre otomatik arşive düşer
-3. **Hafta kapatma:** Manuel butona basılır → onay modalı → DONE'lar arşive, diğerleri kalır → hafta numarası +1
-4. **Arşiv kalıcıdır:** Silinmez, sadece görüntülenir
-5. **Tek kullanıcı:** Sabit username/password, JWT session
+2. **DONE max 10:** Bir görev DONE'a taşınırken DONE sayısı 10'sa, `createdAt` en eski DONE kartı `ArchivedTask`'a taşı (`archiveReason = AUTO`), sonra görevi DONE yap. Tek transaction.
+3. **Hafta kapatma:** Tüm DONE görevleri arşive (`archiveReason = WEEK_CLOSE`), `WeekReport` üret, `weekNumber +1`, `startedAt` güncelle. TODO/IN_PROGRESS dokunulmaz. Tek transaction.
+4. **Haftalık rapor:** Hafta kapatılınca otomatik üretilir; sonradan değiştirilemez.
+5. **Arşiv kalıcıdır:** Silinmez, sadece görüntülenir.
+6. **Günün görevi:** Max 3 kart işaretlenebilir. `todayMarkedAt` bugünden önceyse `isTodayTask` otomatik `false` yapılır (`GET /tasks` başında `updateMany`).
+7. **Bağlantılı görev döngüsü:** A → B → A ilişkisi engellenmeli (400 dön).
+8. **Varsayılan board silinemez** (400 dön); içindeki görevler silinmeden önce varsayılana taşınır.
+9. **Webhook:** Rate limit — aynı IP'den dakikada max 30 istek (in-memory).
+10. **Tek kullanıcı:** Sabit username/password env'den, JWT session.
+
+---
+
+## Sürükle-Bırak
+
+`@dnd-kit/core` + `@dnd-kit/sortable` kullanılır.
+
+```tsx
+// Board.tsx
+<DndContext onDragEnd={handleDragEnd}>
+  <Column status="TODO" tasks={todoTasks} />
+  <Column status="IN_PROGRESS" tasks={inProgressTasks} />
+  <Column status="DONE" tasks={doneTasks} />
+</DndContext>
+```
+
+- Kart kolonlar arası taşınınca `PATCH /tasks/:id/status` çağrılır
+- Aynı kolon içi sıralama `position` alanı güncellenerek yapılır
+- Sürükleme sırasında kart yarı saydam; bırakılan kolon highlight alır
+- İş kuralları korunur (DONE max 10)
+
+---
+
+## CSV Export
+
+```typescript
+// backend — harici paket kullanılmaz
+function toCSV(headers: string[], rows: string[][]): string {
+  const escape = (v: string) => `"${v.replace(/"/g, '""')}"`
+  return [headers.join(','), ...rows.map(r => r.map(escape).join(','))].join('\n')
+}
+```
+
+Response headers:
+```typescript
+reply.header('Content-Type', 'text/csv; charset=utf-8')
+reply.header('Content-Disposition', 'attachment; filename="tasks-hafta-{n}.csv"')
+```
+
+Büyük veri setlerinde `reply.raw` ile stream yazılır.
+
+---
+
+## Webhook Kullanımı
+
+```bash
+curl -X POST http://localhost/api/webhook/tasks \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Secret: your_secret" \
+  -d '{"title": "Script çıktısını kontrol et", "tag": "OPS", "priority": "HIGH"}'
+```
 
 ---
 
 ## Environment Variables
 
-**Proje kökü `.env`** (Docker Compose port ayarı):
-
+**Proje kökü `.env`:**
 ```
 APP_PORT=8080
 ```
 
-**`backend/.env`** (Docker Compose env olarak da geçilir):
-
+**`backend/.env`** (docker-compose env olarak da geçilir):
 ```
 DATABASE_URL=postgresql://taskboard:taskboard_secret@postgres:5432/taskboard
 JWT_SECRET=change_this_secret_in_production
 PORT=3001
 AUTH_USERNAME=admin
 AUTH_PASSWORD=admin123
+WEBHOOK_SECRET=change_this_webhook_secret
 ```
 
-**Not:** VPS'e taşırken `JWT_SECRET` ve `AUTH_PASSWORD` mutlaka değiştir.
-Port 80 kullanmak için proje kökündeki `.env`'de `APP_PORT=80` yap.
+> VPS'e taşırken `JWT_SECRET`, `AUTH_PASSWORD` ve `WEBHOOK_SECRET` mutlaka değiştir.
 
 ---
 
@@ -652,33 +1045,18 @@ docker compose down
 docker compose down -v
 ```
 
-Uygulama `http://localhost` adresinden erişilebilir.
-
----
-
-## Geliştirme Sırası
-
-Bu sırayı takip et, her adımı bitirmeden diğerine geçme:
-
-1. `docker-compose.yml` ve Dockerfile'ları oluştur
-2. Prisma schema + migration
-3. Backend: auth route + JWT middleware
-4. Backend: tasks CRUD (iş kuralları dahil)
-5. Backend: archive + week routes
-6. Frontend: types + api.ts
-7. Frontend: LoginPage
-8. Frontend: Board + Column + TaskCard (statik veri ile)
-9. Frontend: NewTaskModal + CloseWeekModal + ArchivePanel
-10. Frontend: API entegrasyonu (statik veriyi kaldır)
-11. Frontend: Toast sistemi
-12. Son test: `docker compose up --build` ile end-to-end çalıştır
+Uygulama `http://localhost:8080` (veya `.env`'deki `APP_PORT`) adresinden erişilebilir.
 
 ---
 
 ## Notlar
 
-- Prisma transaction kullan: DONE'a taşıma ve hafta kapatma atomik olmalı
+- Prisma transaction kullan: DONE'a taşıma, hafta kapatma ve ilgili aktivite logları atomik olmalı
 - Frontend'de tüm state React state ile yönet (Redux/Zustand gerekmez)
 - API hata durumlarında toast ile kullanıcıya bildir
 - Mobil uyumluluk gerekmez, sadece desktop
 - Test yazma, direkt çalışan kod yaz
+- `ActivityLog` tablosunda `taskId` ve `createdAt` üzerinde index var (performans)
+- Scratch pad düz metin, şifrelenmez
+- Sürükle-bırak ve klavye kısayolları çakışmaz; tüm panel açma/kapama ESC ile çalışır
+- Odak modu açıkken yalnızca odak modu kısayolları (`←` `→` `ESC`) aktif
